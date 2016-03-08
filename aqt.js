@@ -87,8 +87,11 @@ var aqt = window.aqt || (function()
                     }
                     else if (attr.name == 'aqt:')
                     {
-                        var fn = ctx.$expr(attr.value);
-                        target.innerHTML = fn();
+                        ctx.$watch(attr.value,
+                        function(value)
+                        {
+                            target.innerHTML = value;
+                        });
                     }
                 }
 
@@ -115,7 +118,8 @@ var aqt = window.aqt || (function()
                 target.setAttribute('aqt', ctxid);
                 contexts[ctxid] = ctx;
                 ctx.$id = ctxid;
-                
+                ctx.$watch();
+
                 if (into === undefined)
                 {
                     return ctx;
@@ -288,6 +292,7 @@ var aqt = window.aqt || (function()
     var Context = AQT.Context = function AQTContext()
     {
         this.$root = this;
+        this.$watchers = {};
     };
     Context.prototype = 
     {
@@ -386,13 +391,82 @@ var aqt = window.aqt || (function()
                                  ? this.$prefix 
                                  : this.$prefix + name];
         },
+        $watch: function(what, fn)
+        {
+            if (what === undefined)
+            {
+                if (! this.$root.$watching)
+                {
+                    this.$root.$watching = true;
+                    try
+                    {
+                        var watchers = this.$root.$watchers;
+                        var dirty = true, cycles = 500;
+                        while (dirty && --cycles >= 0)
+                        {
+                            dirty = false;
+                            for (var id in watchers)
+                            {
+                                var watcher = watchers[id];
+                                if (watcher())
+                                {
+                                    dirty = true;
+                                }
+                            }
+                        }
+                        if (cycles < 0)
+                        {
+                            throw "Cyclomatic error";
+                        }
+                    }
+                    finally
+                    {
+                        this.$root.$watching = false;
+                    }
+                }
+            }
+            if (typeof what === 'function')
+            {
+                var context = this;
+                var promise = new Promise();
+                var check = comparator();
+                var root = this.$root;
+                var extract = what.bind(this);
+
+                var checker = promise.$check = function checker()
+                {
+                    var current = extract();
+                    var changed = ! check(current);
+                    console.log(context, current, changed);
+                    if (changed)
+                    {
+                        check = comparator(current);
+                        fn.call(context, current);
+                    }
+                    return changed;
+                }
+
+                var watchID = ++(root.$nextWatchID);
+                root.$watchers[watchID] = checker;
+
+                return promise;
+            }
+            else if (typeof what === 'string')
+            {
+                return this.$watch(this.$expr(what), fn)
+            }
+        },
         $expr: function(expr)
         {
             var context = this;
             expr = expr.replace(/(^\.|[^a-zA-Z0-9_]\.)/g, 'this.');
             var evaluator = eval('(function(){return ' + expr + '})');
-            return function() { return evaluator.call(context); };
-        }
+            return function() 
+            { 
+                return evaluator.call(context); 
+            };
+        },
+        $nextWatchID: 0
     };
     Object.defineProperty(Context.prototype, '$context', 
                           { get: function() { return this; } });
@@ -439,6 +513,7 @@ var aqt = window.aqt || (function()
                 promise.then(thissvc.$promise.fn());
             }
         });
+        context.$watch();
         return thissvc;
     };
 
@@ -681,6 +756,7 @@ var aqt = window.aqt || (function()
                                 {
                                     promise.notify(result);
                                 }
+                                context.$watch();
                             });
                         }
                     }
@@ -754,6 +830,92 @@ var aqt = window.aqt || (function()
         }
     };
 
+    //////////////////////////////////////////////////////////////////////////
+    
+    var comparator = AQT.comparator = function(obj)
+    {
+        if (obj instanceof Array)
+        {
+            var proto = obj.__proto__;
+            var l = obj.length;
+            var checks = [];
+            for (var i = 0; i < l; ++i)
+            {
+                checks.push(comparator(obj[i]));
+            }
+            return function(o)
+            {
+                if (o.__proto__ !== proto)
+                {
+                    return false;
+                }
+
+                if (o.length != l)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < l; ++i)
+                {
+                    if (! checks[i](o[i]))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+        else if (typeof obj === 'object')
+        {
+            var proto = obj.__proto__;
+            var checks = [];
+            var keys = Object.keys(obj);
+            var l = keys.length;
+            for (var i = 0; i < l; ++i)
+            {
+                var key = keys[i];
+                checks[key] = true;
+                checks.push(
+                    (function(k, c)
+                    {
+                        return function(o) { return c(o[k]); };
+                    })(key, comparator(obj[key]))
+                );
+            }
+
+            return function(o)
+            {
+                if (o.__proto__ !== proto)
+                {
+                    return false;
+                }
+
+                for (var key in o)
+                {
+                    if (!checks[key])
+                    {
+                        return false;
+                    }
+                }
+
+                for (var i = 0; i < l; ++i)
+                {
+                    if (! checks[i](o))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+        }
+        else
+        {
+            return function(o) { return obj == o; };
+        }
+    }
+    
     //////////////////////////////////////////////////////////////////////////
     
     setup.then(
