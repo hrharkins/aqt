@@ -1,0 +1,23 @@
+<html?
+<head>
+    <title>AQT</title>
+    <link rel='aqt-module' id='Lib' href='/'>
+    <link rel='aqt-module' id='Hello' href='aqt://Lib/hello.js'>
+</head>
+<script src='/aqt.js'></script>
+<script type='aqt' id='aqt:///HelloMod' href='/hello.js'></script>
+<body>
+<div aqt id='root'>
+    <div aqt id='middle'>
+        <div aqt id='inner'>
+            Chain
+        </div>
+    </div>
+</div>
+<div aqt id='greet' aqt-greeter:$service='aqt:///HelloMod/GreeterSvc'>
+    <div>Hello <span aqt:='.greeter.who'></span></div>
+    <div aqt>Hello</div>
+    <div aqt aqt-greeter-who='you'>Hello</div>
+</div>
+</body>
+</html>
