@@ -1,3 +1,5 @@
+// aqt.js
+// Copyright (c) 2016 Rich Harkins.  All Rights Reserved.
 
 var aqt = window.aqt || (function()
 {
