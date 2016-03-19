@@ -5,9 +5,10 @@
     <link rel='aqt-module' id='Hello' href='aqt://Lib/hello.js'>
 </head>
 <script src='/aqt.js'></script>
+<script src='/aqt/debug.js'></script>
 <script type='aqt' id='aqt:///HelloMod' href='/hello.js'></script>
 <body>
-<div aqt id='root'>
+<div aqt id='root' aqt-x:int='5'>
     <div aqt id='middle'>
         <div aqt id='inner'>
             Chain
@@ -16,8 +17,8 @@
 </div>
 <div aqt id='greet' aqt-greeter:$service='aqt:///HelloMod/GreeterSvc'>
     <div>Hello <span aqt:='.greeter.who'></span></div>
-    <div aqt>Hello</div>
-    <div aqt aqt-greeter-who='you'>Hello</div>
+    <div aqt>Hello <span aqt:='.greeter.who'></span></div>
+    <div aqt aqt-greeter-who='you'>Hello <span aqt:='.greeter.who'></span></div>
 </div>
 </body>
 </html>

@@ -4,7 +4,7 @@ function()
 {
     this.GreeterSvc = function(dest)
     {
-        dest.$var('who', 'world');
+        dest.$define('who', 'world');
     }
 })
 

@@ -9,983 +9,1013 @@ var aqt = window.aqt || (function()
     {
         if (obj instanceof Element)
         {
-            var ctxid
-            while (obj !== null && ! (ctxid = obj.getAttribute('aqt')))
-            {
-                obj = obj.parentElement;
-            }
-            if (obj === null)
-            {
-                return into;
-            }
-            else if (into === undefined)
-            {
-                return contexts[ctxid];
-            }
-            else
-            {
-                var context = contexts[ctxid];
-                if (context !== undefined)
-                {
-                    into.push(contexts[ctxid]);
-                }
-                return into;
-            }
+            var ctx = obj.aqt;
+            return ctx === undefined ? aqt(obj.parentElement) : ctx;
+        }
+        else if (obj === undefined || obj === null)
+        {
+            return null;
         }
         else if (typeof obj === 'string')
         {
-            var element = this === window ? document : this;
-            if (into === undefined)
+            var base = this === window ? document : this;
+            var elements = base.querySelectorAll(obj);
+            var n = elements.length;
+            var result = into;
+            for (var i = 0; i < n; ++i)
             {
-                return aqt(element.querySelector(obj))
+                var ctx = aqt(elements[i]);
+                result = result === undefined ? ctx : result;
             }
-            else
-            {
-                var nodes = element.querySelectorAll(obj);
-                var l = nodes.length;
-                for (var i = 0; i < l; ++i)
-                {
-                    aqt(nodes[i], into);
-                }
-                return into;
-            }
+            return result;
         }
     }
 
-    var AQT = aqt.__proto__ = new Object(Function.prototype);
+    var AQT = aqt.__proto__ = Object.create(Function.prototype);
+
+    //////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+
+    var Promise = AQT.Promise = function Promise(self)
+    {
+        if (self !== undefined)
+        {
+            this.self = self;
+        }
+    };
+
+    Promise.prototype = 
+    {
+        nextLinkID: 0,
+
+        $deliver: function(data, callback, start, initiator)
+        {
+            var self = this.self;
+            self = self === undefined ? this : self;
+            initiator = initiator === undefined ? this : initiator;
+            var chain = this.chain;
+            if (chain !== undefined)
+            {
+                var l = chain.length;
+                for (var i = start === undefined ? 1 : start; i < l; i += 2)
+                {
+                    var link = chain[i];
+                    // TODO: May not need this.  Not sure how to dsiable
+                    // yet.
+                    var resolution = (typeof link === 'function')
+                                     ? link.call(self, data, initiator, this)
+                                     : undefined;
+                    if (resolution !== undefined)
+                    {
+                        var promise = this;
+                        resolution.then(function(replace)
+                        {
+                            promise.deliver(replace === undefined 
+                                                ? data : replace,
+                                            callback, i + 1, initiator);
+                        });
+                        return callback;
+                    };
+                }
+            }
+
+            if (callback !== undefined)
+            {
+                callback.call(self, data, initiator, this); 
+            }
+        },
+
+        $when: function(obj, single)
+        {
+            var waiting = 1;        // Prevents immediate triggers.
+            var promise = this;
+            var cancels = single ? [] : undefined;
+
+            function await(source, base, key)
+            {
+                ++waiting;
+                var unset = true;
+                base[key] = undefined;
+                var id = source.$add(function(value)
+                {
+                    base[key] = value;
+                    if (waiting === 0)
+                    {
+                        promise.$deliver(obj);
+                    }
+                    else if (unset && --waiting === 0)
+                    {
+                        unset = false;
+                        if (single)
+                        {
+                            var n = cancels.length;
+                            for (var i = 0; i < n; i += 2)
+                            {
+                                cancels[i].$cancel(cancels[i+1]);
+                            }
+                        }
+                        promise.$deliver(obj);
+                    }
+                });
+
+                if (single)
+                {
+                    cancels.push(source, id);
+                }
+            }
+
+            function prepare(obj, base, key)
+            {
+                if (obj instanceof Array)
+                {
+                    var n = obj.length;
+                    for (var i = 0; i < n; ++i)
+                    {
+                        prepare(obj[i], obj, i);
+                    }
+                }
+                else if (obj.$promise)
+                {
+                    await(obj.$promise, base, key);
+                }
+                else if (obj instanceof Promise)
+                {
+                    await(obj, base, key);
+                }
+                else
+                {
+                    for (var key in obj)
+                    {
+                        prepare(obj[key], obj, key);
+                    }
+                }
+            }
+
+            prepare(obj, arguments, 0);
+
+            if (! --waiting)
+            {
+                this.deliver(obj);
+            }
+            
+            return this;
+        },
+
+        $every: function()
+        {
+            return this.$when(arguments, false);
+        },
+
+        $once: function()
+        {
+            return this.$when(arguments, true);
+        },
+
+        $add: function()
+        {
+            var status = arguments[0];
+            var chain = this.chain;
+            if (chain === undefined)
+            {
+                chain = this.chain = [];
+            }
+
+            var id = this.nextLinkID++;
+            chain.push(id);
+
+            if (typeof status === 'string')
+            {
+                var target = this[status];
+                var promise = target.$promise;
+                Array.prototype.push.apply(
+                    (promise === undefined ? target : promise).chain,
+                    Array.prototype.slice.call(arguments, 1)
+                );
+            }
+            else
+            {
+                Array.prototype.push.apply(this.chain, arguments);
+            }
+            return id;
+        },
+
+        $cancel: function(id)
+        {
+            var chain = this.chain;
+            var n;
+            if (chain !== undefined && (n = chain.length) != 0)
+            {
+                for (var i = 0; i < n; i += 2)
+                {
+                    if (chain[i] === id)
+                    {
+                        Array.prototype.splice.call(chain, i, 2);
+                        return;
+                    }
+                }
+            }
+        },
+
+        $then: function()
+        {
+            this.$add.apply(this, arguments);
+            return this;
+        },
+
+        $call: function(fn)
+        {
+            return this.$then(function(args) { return fn.apply(this, args) });
+        },
+
+        $with: function(status, fn)
+        {
+            this[status] = fn === undefined ? new Resolution(this.self) : fn;
+            return this;
+        }
+    };
+
+    Object.defineProperty(
+        Promise.prototype, '$chain',
+        {
+            get: function()
+            {
+                var promise = this;
+                function deliverer()
+                {
+                    return promise.$deliver.apply(promise, arguments);
+                };
+                Object.assign(deliverer, promise.$delivererMethods);
+                deliverer.$promise = promise;
+                return deliverer;
+            }
+        }
+    );
+
+    Object.defineProperty(
+        Promise.prototype, '$fn',
+        {
+            get: function()
+            {
+                var promise = this;
+                function deliverer()
+                {
+                    return promise.$deliver.call(promise, arguments);
+                };
+                Object.assign(deliverer, promise.$delivererMethods);
+                deliverer.$promise = promise;
+                return deliverer;
+            }
+        }
+    );
+
+    var delivererMethods = Promise.prototype.$delivererMethods =
+    {
+        $when: function() 
+        { this.$promise.$when.apply(this.$promise, arguments); return this; },
+        $every: function() 
+        { this.$promise.$every.apply(this.$promise, arguments); return this; },
+        $once: function() 
+        { this.$promise.$once.apply(this.$promise, arguments); return this; },
+        $add: function() 
+        { return this.$promise.$add.apply(this.$promise, arguments); },
+        $cancel: function() 
+        { this.$promise.$cancel.apply(this.$promise, arguments); return this; },
+        $then: function() 
+        { this.$promise.$then.apply(this.$promise, arguments); return this; },
+        $call: function() 
+        { this.$promise.$call.apply(this.$promise, arguments); return this; },
+        $with: function() 
+        { this.$promise.$with.apply(this.$promise, arguments); return this; },
+        $deliver: function() 
+        { this.$promise.$deliver.apply(this.$promise, arguments); return this; }
+    };
+
+    Object.defineProperty(Promise.prototype, '$promise',
+                          { get: function() { return this; } } );
 
     //////////////////////////////////////////////////////////////////////////
     
+    var Resolution = AQT.Resolution = function Resolution(self)
+    {
+        Promise.apply(this, arguments);
+    }
+
+    Resolution.prototype = Object.assign(Object.create(Promise.prototype),
+    {
+        deliver: function(data, start)
+        {
+            var resolution = Promise.prototype.deliver.call(this, data, start);
+            if (resolution === undefined)
+            {
+                this.resolve(data);
+            }
+            else
+            {
+                resolution.then(this.resolve.bind(this));
+            }
+            return resolution;
+        },
+
+        resolve: function(data)
+        {
+            var self = this.self;
+            self = self === undefined ? this : self;
+            this.deliver = delivered_resolution_deliverfn;
+            this.then = delivered_resolution_thenfn;
+            this.data = data
+            delete this.chain;
+        }
+    });
+
+    function delivered_resolution_deliverfn()
+    {
+        throw "Cannot deliver on resolved promise";
+    };
+
+    function delivered_resolution_thenfn(fn)
+    {
+        fn.call(self, this.data, this);
+        return this;
+    };
+
+    //////////////////////////////////////////////////////////////////////////
+    
+    var Variable = AQT.Variable = function Variable(value, self)
+    {
+        Promise.call(this, self);
+        if (value !== undefined)
+        {
+            this.value = value;
+            this.changed = comparator(value);
+        }
+        return this.fn;
+    }
+
+    Variable.prototype = Object.assign(Object.create(Promise.prototype),
+    {
+        $deliver: function(value, callback, start, initiator)
+        {
+            if (this.changed !== undefined)
+            {
+                if (! this.changed(value))
+                {
+                    // No change.
+                    return;
+                }
+            }
+            this.value = value;
+            this.changed = comparator(value);
+            return Promise.prototype.$deliver.apply(this, arguments);
+        },
+
+        $then: function(fn)
+        {
+            var value = this.value;
+            if (value !== undefined)
+            {
+                fn.call(this, value);
+            }
+            return Promise.prototype.$then.apply(this, arguments);
+        }
+    });
+
+    //////////////////////////////////////////////////////////////////////////
+
+    var comparator = aqt.comparator = function comparator(o)
+    {
+        if (o instanceof Array)
+        {
+            var p = o.__proto__;
+            var n = o.length;
+            var cmps = [];
+
+            for (var i = 0; i < n; ++i)
+            {
+                cmps.push(comparator(o[i]));
+            }
+
+            return function(t)
+            {
+                if ((t === undefined) || (t === null) || (t.__proto__ !== p))
+                {
+                    return true;
+                }
+
+                if (t.length !== n)
+                {
+                    return true;
+                }
+
+                for (var i = 0; i < n; ++i)
+                {
+                    if (cmps[i](t[i]) === true)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+        else if (typeof o === 'object')
+        {
+            var p = o.__proto__;
+            var cmps = {};
+            for (var key in o)
+            {
+                if (! Object.hasOwnProperty(o, key))
+                {
+                    cmps[key] = comparator(o[key]);
+                }
+            }
+            var nkeys = keys.length;
+
+            return function(t)
+            {
+                if ((t === undefined) || (t === null) || (t.__proto__ !== p))
+                {
+                    return true;
+                }
+
+                for (var k in cmps)
+                {
+                    if (cmps[k](t[k]) === true)
+                    {
+                        return true;
+                    }
+                }
+
+                for (var k in t)
+                {
+                    if (! Object.hasOwnProperty(t, k) && ! ( k in cmps))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+        }
+        else if (typeof o === 'function')
+        {
+            return o;
+        }
+        else if (o === null)
+        {
+            return function(t) { return t === undefined || t === null; }
+        }
+        else 
+        {
+            return function(t) { return o !== t; }
+        }
+    }
+    
+    //////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+
     var install = AQT.install = function install(target, into)
     {
         if (target instanceof Element)
         {
-            var ctxid = target.getAttribute('aqt');
-            if (! ctxid)
+            var ctx = target.aqt;
+            if (ctx === undefined)
             {
-                var base = aqt(target.parentNode);
-                var ctxid = nextContextID++;
-                var ctx = context(base).$private();
+                target.aqt = ctx = context(aqt(target.parentElement));
                 ctx.$element = target;
-                var remap = target.querySelectorAll('[aqt~="."]');
 
                 var attrs = target.attributes;
-                var attrn = attrs.length;
-                for (var i = 0; i < attrn; ++i)
+                var nattrs = attrs.length;
+                for (var attridx = 0; attridx < nattrs; ++attridx)
                 {
-                    var attr = attrs[i];
-                    if (attr.name.substring(0, 4) == 'aqt-')
+                    var attr = attrs[attridx];
+                    var name = attr.name;
+                    if (name.substring(0, 4) === 'aqt-')
                     {
-                        var parts = attr.name.substring(4).split(':');
-                        var name = parts.shift();
-                        var dest = ctx.$path(name);
-                        ctx[name] = dest;
-                        dest.$set(attr.value);
-                        var xformid;
-                        while ((xformid = parts.shift()) !== undefined)
+                        name = name.substring(4);
+                        var parts = name.split(':');
+                        var dest = ctx.$$var(parts[0]);
+                        var nparts = parts.length;
+                        if (nparts > 1)
                         {
-                            dest.$make(xformid);
-                        }
-                    }
-                    else if (attr.name == 'aqt:')
-                    {
-                        ctx.$watch(attr.value,
-                        function(value)
-                        {
-                            target.innerHTML = value;
-                        });
-                    }
-                }
-
-                function fixup(node)
-                {
-                    var children = node.children;
-                    var l = children.length;
-                    for (var i = 0; i < l; ++i)
-                    {
-                        var child = children[i];
-                        var ctxid;
-                        if (child instanceof Element
-                            && (ctxid = child.getAttribute('aqt')))
-                        {
-                            contexts[ctxid].__proto__ = ctx;
+                            var wip = dest.$in(ctx.$new());
+                            for (var partidx = 1; partidx < nparts; ++partidx)
+                            {
+                                wip = wip.$morph(parts[partidx]);
+                            }
                         }
                         else
                         {
-                            fixup(child);
+                            dest(attr.value);
                         }
                     }
-                };
-                fixup(target);
-                target.setAttribute('aqt', ctxid);
-                contexts[ctxid] = ctx;
-                ctx.$id = ctxid;
-                ctx.$watch();
-
-                if (into === undefined)
-                {
-                    return ctx;
                 }
-                else
+
+                function updateChildrenOf(target, ctx)
                 {
-                    into.push(ctx);
-                    return into;
-                }
-            }
-            else if (into === undefined)
-            {
-                return contexts[ctxid];
-            }
-            else
-            {
-                into.push(contexts[ctxid]);
-                return into;
-            }
-        }
-        else
-        {
-            var element = this === aqt ? document : this;
-            var last;
-            if (element.getAttribute !== undefined
-                && element.getAttribute('aqt') !== null)
-            {
-                last = install.call(this, element, into);
-            }
-            var nodes = element.querySelectorAll === undefined
-                        ? [] : element.querySelectorAll(target);
-            var l = nodes.length;
-            for (var i = 0; i < l; ++i)
-            {
-                last = install.call(this, nodes[i], into);
-            }
-            return into === undefined ? last : into;
-        }
-    }
-
-    //////////////////////////////////////////////////////////////////////////
-    
-    var Promise = AQT.Promise = function AQTPromise(self)
-    {
-        this.chain = [];
-        this.self = self;
-    }
-
-    Promise.prototype =
-    {
-        then: function(fn)
-        {
-            this.chain.push(function(r) 
-            { 
-                return r === undefined ? undefined : fn.apply(this, arguments);
-            });
-            return this;
-        },
-
-        watch: function(fn)
-        {
-            this.chain.push(function(r, s)
-            { 
-                return fn.call(this, s, r);
-            });
-            return this;
-        },
-
-        status: function(fn)
-        {
-            this.chain.push(function(r, s)
-            { 
-                return s === undefined ? undefined : fn.call(this, s, r);
-            });
-            return this;
-        },
-
-        handle: function(fn)
-        {
-            this.chain.push(fn)
-            return this;
-        },
-
-        deliver: function(result, status, start, holdoff)
-        {
-            var chain = this.chain,
-                self = this.self;
-            
-            if (self === undefined)
-            {
-                self = this;
-            }
-
-            for (var i = start || 0; i < chain.length; ++i)
-            {
-                var link = chain[i];
-                var hold = link.disabled === undefined
-                           ? link.call(self, result, status)
-                           : undefined;
-                if (hold !== undefined)
-                {
-                    var promise = this;
-                    if (holdoff === undefined)
+                    var children = target.children;
+                    var n = children.length;
+                    for (var i = 0; i < n; ++i)
                     {
-                        holdoff = new Promise(this.self);
+                        var child = children[i];
+                        if (child instanceof Element)
+                        {
+                            var childctx = child.aqt;
+                            if (childctx !== undefined)
+                            {
+                                childctx.__proto__ = childctx.$parent = ctx;
+                            }
+                            updateChildrenOf(child, ctx);
+                        }
                     }
-
-                    hold.handle(
-                    function(_result, status)
-                    {
-                        var _result = _result === undefined ? result : _result;
-                        var _status = _status === undefined ? status : _status;
-                        return promise.deliver(_result, _status,
-                                               i + 1, holdoff);
-                    })
-
-                    return holdoff;
                 }
+
+                updateChildrenOf(target, ctx);
             }
-
-            if (holdoff !== undefined)
-            {
-                holdoff.deliver(result, status);
-            }
-
-            if (result !== undefined)
-            {
-                chain = [];
-                this.deliver = function()
-                {
-                    throw "Cannot deliver on resolved promise.";
-                }
-                this.then = this.handle = function(fn)
-                {
-                    fn.apply(self, result, status);
-                }
-                this.notify = function(fn)
-                {
-                    fn.apply(self, status, result);
-                }
-            }
-        },
-
-        notify: function(status)
-        {
-            return this.deliver(undefined, status);
-        },
-
-        fn: function()
-        {
-            return this.deliver.bind(this);
+            return ctx;
         }
-    };
-    
-    //////////////////////////////////////////////////////////////////////////
-    
-    var setup = AQT.setup = new Promise();
-
-    document.addEventListener('DOMContentLoaded', 
-                              function() { setup.deliver(aqt); });
-
-    //////////////////////////////////////////////////////////////////////////
-
-    var nextContextID = 0;
-    var contexts = { };
-    var context = AQT.context = function context(base)
-    {
-        return base === undefined ? new Context() : base.$new();
+        else if (typeof target === 'string')
+        {
+            var base = this === aqt ? document : this;
+            var elements = base.querySelectorAll(target);
+            var n = elements.length;
+            var result = into;
+            for (var i = 0; i < n; ++i)
+            {
+                var ctx = install(elements[i]);
+                result = result === undefined ? ctx : result;
+            }
+            return result;
+        }
     }
+
+    //////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+    
     var Context = AQT.Context = function AQTContext()
     {
-        this.$root = this;
-        this.$watchers = {};
+        this.$root = this.$context = this;
     };
-    Context.prototype = 
+
+    var context = AQT.context = function(base)
     {
-        $prefix: '/',
-        $domain: function(name)
+        if (base == null)
         {
-            return {
-                __proto__: this, 
-                $context: this.$context,
-                $prefix: this.$prefix + name + '/'
-            };
+            return new Context();
+        }
+        else
+        {
+            var ctx = Object.create(base);
+            ctx.$context = ctx;
+            return ctx;
+        }
+    }
+
+    Context.prototype =
+    {
+        $: function(path)
+        {
+            if (path)
+            {
+                return new Ref(this, path[0] === '-' ? path : '-' + path);
+            }
+            else
+            {
+                return new Ref(this, '');
+            }
         },
+
         $new: function()
         {
-            var ctx = Object.create(this);
-            ctx.$parent = this;
-            return ctx;
+            return context(this);
         },
-        $private: function(n)
+
+        // Delegate key methods of refs to the default ref. 
+        $in: function()
+        { var r = this.$(); return r.$in.apply(r, arguments); },
+        $get: function()
+        { var r = this.$(); return r.$get.apply(r, arguments); },
+        $set: function()
+        { var r = this.$(); return r.$set.apply(r, arguments); },
+        $call: function()
+        { var r = this.$(); return r.$call.apply(r, arguments); },
+        $$call: function()
+        { var r = this.$(); return r.$$call.apply(r, arguments); },
+        $apply: function()
+        { var r = this.$(); return r.$apply.apply(r, arguments); },
+        $$apply: function()
+        { var r = this.$(); return r.$$apply.apply(r, arguments); },
+        $define: function()
+        { var r = this.$(); return r.$define.apply(r, arguments); },
+        $make: function()
+        { var r = this.$(); return r.$make.apply(r, arguments); },
+        $refresh: function()
+        { var r = this.$(); return r.$refresh.apply(r, arguments); },
+        $var: function()
+        { var r = this.$(); return r.$var.apply(r, arguments); },
+        $$var: function()
+        { var r = this.$(); return r.$$var.apply(r, arguments); },
+
+        ':int': parseInt,
+        ':bool': function(v) { return !!v; }
+    };
+
+    Object.defineProperty(Context.prototype, '_',
+    {
+        get: function() { return this.$()._; },
+        set: function(value) { return this.$()._ = value; },
+    });
+
+    Object.defineProperty(Context.prototype, '$make',
+    {
+        get: function() { return this.$().$meta; }
+    });
+
+    Object.defineProperty(Context.prototype, '$parent',
+    {
+        get: function() { return this.$context.__proto__.$context; },
+    });
+
+    //////////////////////////////////////////////////////////////////////////
+
+    var Ref = AQT.Ref = function Ref(ctx, path)
+    {
+        this.ctx = ctx;
+        this.path = path;
+    }
+
+    Ref.prototype =
+    {
+        $: function(subpath)
         {
-            return Object.create(this);
-        },
-        $path: function(path)
-        {
-            return {
-                __proto__: this, 
-                $context: this.$context,
-                $prefix: this.$prefix + path.replace(/-/g, '/') + '/'
-            };
-        },
-        $install: function(name, service, config)
-        {
-            var domain = this.$domain(name);
-            var l = arguments.length;
-            var install = service.service,
-                install = install === undefined ? service : install;
-            this[name] = install.call(this, config === undefined ? {} : config);
-            var svcname = service.name;
-            if (svcname)
+            if (subpath)
             {
-                this[svcname] = this[name];
+                return new Ref(this.ctx, subpath[0] == '-' 
+                               ? subpath 
+                               : this.path + '-' + subpath);
+            }
+            else
+            {
+                return this;
+            }
+        },
+
+        $new: function()
+        {
+            return this.$in(this.ctx.$new());
+        },
+
+        $get: function(subpath)
+        {
+            if (arguments.length == 0)
+            {
+                return this.ctx[this.path];
+            }
+            else
+            {
+                return this.ctx[this.path + subpath];
+            }
+        },
+
+        $set: function(subpath, value)
+        {
+            var path = arguments.length === 1 ? this.path : this.path + subpath;
+            var ctx = this.ctx;
+            if (arguments.length === 1)
+            {
+                value = subpath;
+            }
+            if (ctx[path] !== value)
+            {
+                ctx[path] = value;
+                ctx['-' + path] = undefined;
             }
             return this;
         },
-        $set: function(name, value)
+
+        $var: function(value, self)
         {
-            if (arguments.length == 2)
+            this.ctx[this.path] = new Variable(value, self).fn;
+            return this;
+        },
+
+        $$var: function(subpath, value, self)
+        {
+            return this.$(subpath).$var(value, self);
+        },
+
+        $call: function()
+        {
+            return this._.apply(this, arguments);
+        },
+
+        $$call: function(what)
+        {
+            var args = Array.prototype.slice.call(arguments, 1);
+            return this.$(what)._.apply(this, args);
+        },
+
+        $apply: function(args)
+        {
+            return this._.apply(this, args);
+        },
+
+        $$apply: function(what, args)
+        {
+            return this.$(what)._.apply(this, args);
+        },
+
+        $define: function(obj)
+        {
+            if (typeof obj === 'function')
             {
-                this.$context[this.$prefix + name] = value;
-                return this;
+                return this.$set(obj.name, obj);
             }
             else
             {
-                // Name is actually the value, but set on the current
-                // domain.
-                this.$context[this.$prefix] = name;
-                return name;
+                throw "Cannot $define a " + obj.__proto__.constructor.name;
             }
         },
-        $default: function()
+        
+        $in: function(ctx)
         {
-            if (arguments.length == 1)
-            {
-                var value;
-                if ((value = this.$get()) === undefined)
-                {
-                    value = this.$set(this.arguments[0]);
-                }
-                return value;
-            }
-            else
-            {
-                if (this.$get(arguments[0]) === undefined)
-                {
-                    this.$set.apply(this, arguments);
-                }
-                return this;
-            }
+            return ctx === this.ctx ? this : new Ref(ctx, this.path);
         },
-        $var: function(name, value)
+
+        $make: function(what, config, refresh)
         {
-            Object.defineProperty(this, name,
+            var meta = this.$meta;
+            if (config === undefined)
             {
-                get: function() { return this.$get(name) },
-                set: function(value) { return this.$set(name, value); }
+                if (what in meta && meta[what] === undefined)
+                {
+                    throw '$make loop detected: ' + what;
+                }
+                meta[what] = undefined;
+            }
+            var resolution = meta[what];
+            if (resolution === undefined || config !== undefined || refresh)
+            {
+                var fn = this.ctx[':' + what];
+                if (fn === undefined)
+                {
+                    throw "Cannot $make " + what;
+                }
+                resolution = meta[what] = new aqt.Resolution();
+                var value = fn.call(this, this._, config, resolution);
+                if (value !== undefined)
+                {
+                    resolution.deliver(value);
+                }
+            }
+            return resolution;
+        },
+
+        $refresh: function(what)
+        {
+            return this.$make(what, undefined, true);
+        },
+
+        $morph: function()
+        {
+            var ref = this;
+            return this.$make.apply(this, arguments).then(
+            function(value)
+            {
+                var meta = ref.$meta;
+                var old = ref._;
+                if (! ('_' in meta))
+                {
+                    meta._ = old;
+                }
+                meta.__ = old;
+                ref.ctx[ref.$path] = value;
             });
-            if (value !== undefined)
-            {
-                this.$default(name, value);
-            }
-            return this;
         },
-        $get: function(name)
+
+        $declare: function(maker, fn)
         {
-            return this.$context[name === undefined 
-                                 ? this.$prefix 
-                                 : this.$prefix + name];
-        },
-        $watch: function(what, fn)
-        {
-            if (what === undefined)
+            if (arguments.length === 1)
             {
-                if (! this.$root.$watching)
-                {
-                    this.$root.$watching = true;
-                    try
-                    {
-                        var watchers = this.$root.$watchers;
-                        var dirty = true, cycles = 500;
-                        while (dirty && --cycles >= 0)
-                        {
-                            dirty = false;
-                            for (var id in watchers)
-                            {
-                                var watcher = watchers[id];
-                                if (watcher())
-                                {
-                                    dirty = true;
-                                }
-                            }
-                        }
-                        if (cycles < 0)
-                        {
-                            throw "Cyclomatic error";
-                        }
-                    }
-                    finally
-                    {
-                        this.$root.$watching = false;
-                    }
-                }
-            }
-            if (typeof what === 'function')
-            {
-                var context = this;
-                var promise = new Promise();
-                var check = comparator();
-                var root = this.$root;
-                var extract = what.bind(this);
-
-                var checker = promise.$check = function checker()
-                {
-                    var current = extract();
-                    var changed = ! check(current);
-                    console.log(context, current, changed);
-                    if (changed)
-                    {
-                        check = comparator(current);
-                        fn.call(context, current);
-                    }
-                    return changed;
-                }
-
-                var watchID = ++(root.$nextWatchID);
-                root.$watchers[watchID] = checker;
-
-                return promise;
-            }
-            else if (typeof what === 'string')
-            {
-                return this.$watch(this.$expr(what), fn)
-            }
-        },
-        $expr: function(expr)
-        {
-            var context = this;
-            expr = expr.replace(/(^\.|[^a-zA-Z0-9_]\.)/g, 'this.');
-            var evaluator = eval('(function(){return ' + expr + '})');
-            return function() 
-            { 
-                return evaluator.call(context); 
-            };
-        },
-        $nextWatchID: 0
-    };
-    Object.defineProperty(Context.prototype, '$context', 
-                          { get: function() { return this; } });
-
-    //////////////////////////////////////////////////////////////////////////
-
-    Context.prototype.$make = function(spec, src)
-    {
-        var xform = this.$transform.$get(spec);
-        if (xform === undefined)
-        {
-            throw 'Cannot find transform "' + spec + '".';
-        }
-        else
-        {
-            var value = src === undefined ? this.$get() : src;
-            var result = xform.call(this, value);
-            return result === undefined 
-                              ? value 
-                              : src === undefined ? this.$set(result) : result;
-        }
-    };
-    Object.defineProperty(
-        Context.prototype, '$transform',
-        { get: function() { return this.$context.$domain('$transform'); } }
-    );
-
-    //////////////////////////////////////////////////////////////////////////
-   
-    Context.prototype['/$transform/$service'] = function $service(spec)
-    {
-        var context = this;
-        var thissvc = { $promise: new Promise() };
-        this.$import(spec,
-        function(service)
-        {
-            var promise = service.call(thissvc, context);
-            if (promise === undefined)
-            {
-                thissvc.$promise.fn();
+                this.ctx[':' + maker.name] = maker;
             }
             else
             {
-                promise.then(thissvc.$promise.fn());
+                this.ctx[':' + maker] = fn;
+            }
+            return this;
+        },
+
+        $then: function()
+        {
+            var v = this._.$promise;
+            return v.then.apply(this, arguments);
+        },
+
+        $defined: function()
+        {
+            var v = this._.$promise;
+            return v.defined.apply(this, arguments);
+        },
+
+        $next: function()
+        {
+            var v = this._.$promise;
+            return v.next.apply(this, arguments);
+        }
+    };
+
+    Object.defineProperty(Ref.prototype, '_',
+                          { 
+                            get: function() { return this.$get(); },
+                            set: function(value) { return this.$set(value); } 
+                          });
+
+    Object.defineProperty(Ref.prototype, '$meta',
+        {
+            get: function()
+            {
+                var path = '-' + this.$path;
+                var meta = this.ctx[path];
+                if (meta === undefined)
+                {
+                    meta = this.ctx[path] = {};
+                }
+                return meta;
             }
         });
-        context.$watch();
-        return thissvc;
-    };
+
+//    var root = new Context();
+//    root.$define('$transform/');
 
     //////////////////////////////////////////////////////////////////////////
    
-    var urlparse = AQT.urlparse = Context.prototype['/$transform/$urlparse'] = 
-    function $urlparse(src)
+    var when = AQT.when = function when()
     {
-        var m = src.match(URL_RE);
-        if (m !== null)
+        var l = arguments.length;
+        var resolution = new aqt.Resolution();
+        var args = [];
+        var needed = 1;     // Fakes out immeidate triggers.
+        function waiter(promise)
         {
-            return {
-                url: m[0],
-                scheme: m[1],
-                netloc: m[2],
-                path: m[3],
-                querystring: m[4],
-                fragment: m[5]
-            };
-        }
-    };
-    var urlpathparse = AQT.urlpathparse
-        = Context.prototype['/$transform/$urlpathparse'] =
-    function $urlpathparse(src)
-    {
-        src = typeof src === 'string' ? urlparse(src) : src;
-        var parts = src.pathparts = src.path.split('/');
-        while(parts.length && !parts[0])
-        {
-            parts.shift();
-        }
-        return src;
-    };
-    var URL_RE = new RegExp(
-    [
-        '^',
-        '(?:([^:]*):)?',            // Protocol
-        '(?://([^/]*))?',           // "Netloc"
-        '([^?#]*)',                 // Path
-        '(?:\\?([^\#]*))?',         // Query
-        '(?:\#(.*))?',              // Fragment
-        '$'
-    ].join(''));
-
-    var urlbuild = AQT.urlbuild = Context.prototype['/$transform/$urlbuild'] =
-    function $urlbuild(src)
-    {
-        var scheme = src.scheme;
-        var netloc = src.netloc;
-        var path = src.path;
-        var query = src.querystring;
-        var fragment = src.fragment;
-        var parts = [];
-
-        if (path === undefined && src.pathparts !== undefined)
-        {
-            path = src.pathparts.join('/');
-        }
-
-        if (scheme || netloc)
-        {
-            parts.push((scheme || this.default_scheme || 'aqt'), '://',
-                       (netloc || ''));
-
-            if (path !== undefined)
+            var i = args.length;
+            var waiting = true;
+            args.push(undefined);
+            needed++;
+            promise.then(function(value)
             {
-                parts.push(path.substring(0, 1) == '/' ? path : '/' + path);
-            }
-        }
-        else if (path !== undefined)
-        {
-            parts.push(path);
-        }
-
-        if (query !== undefined)
-        {
-            parts.push('?', query);
-        }
-
-        if (fragment !== undefined)
-        {
-            parts.push('#', fragment);
-        }
-
-        return parts.join('')
-    }
-   
-    //////////////////////////////////////////////////////////////////////////
-   
-    var modules = {}
-    var module = AQT.module = function module(uri, loader)
-    {
-        if (loader === undefined)
-        {
-            return modules[uri];
-        }
-        else
-        {
-            var module = modules[uri];
-            if (module === undefined)
-            {
-                module = modules[uri] = new Module(uri);
-            }
-
-            if (typeof loader === 'string')
-            {
-                module.$loader = 
-                function scriptloader(context)
+                args[i] = value;
+                if ((waiting ? --needed : needed) == 0)
                 {
-                    var element = document.createElement('script');
-                    var promise = new Promise();
-                    element.src = loader;
-                    element.type = 'text/javascript';
-                    element.onload = function()
-                    {
-                        promise.deliver(uri);
-                    }
-                    document.head.appendChild(element);
-                    return promise;
-                };
-            }
-            else
-            {
-                module.$initfn = loader;
-            }
-
-            return module;
-        }
-    }
-
-    var Module = AQT.Module = function AQTModule(modid)
-    {
-        this.$id = modid;
-        this.$ready = new Promise();
-    }
-    Module.prototype =
-    {
-        $initfn: function()
-        {
-            throw "Module did not define an $initfn";
-        },
-        $init: function()
-        {
-            // Make any future calls to $load come here and any future
-            // $init calls do nothing.
-            delete this.$loader;
-            this.$init = function() { return this.$ready; }
-
-            // Handle promises from the initfn.
-            var promise = this.$initfn();
-            if (promise === undefined)
-            {
-                this.$ready.deliver(this);
-            }
-            else
-            {
-                promise.then(function()
-                {
-                    this.$ready.deliver(this);
-                });
-            }
-            return this.$ready;
-        },
-        $loader: function()
-        {
-        },
-        $load: function()
-        {
-            var module = this;
-            var promise = this.$loader.call(this);
-            if (promise === undefined)
-            {
-                this.$init();
-            }
-            else
-            {
-                promise.then(function() { module.$init(); });
-            }
-            return this.$ready;
-        }
-    };
-
-    Context.prototype.$import = function()
-    {
-        var context = this;
-        var waiting = 0;
-        var result = [];
-        var imports = [];
-        var nargs = arguments.length;
-        var promise = new Promise();
-        for (var i = 0; i < nargs; ++i)
+                    resolution.deliver(args);
+                }
+                waiting = false;
+            });
+        };
+        for (var i = 0; i < l; ++i)
         {
             var arg = arguments[i];
-            if (typeof arg === 'string')
+            if (arg instanceof Array)
             {
-                imports.push(arg);
-                result.push(undefined);
-                waiting++;
+                for (var ai = 0; ai < al; ++ai)
+                {
+                    waiter(arg[ai]);
+                }
             }
             else if (typeof arg === 'function')
             {
-                var fn = arg;
-                promise.then(function(result) { fn.apply(context, result); });
-            }
-        }
-
-        if (waiting)
-        {
-            for (var i = 0; i < waiting; ++i)
-            {
-                (function(importno, src)
+                if (arg.$promise === undefined)
                 {
-                    if (src.scheme == 'aqt')
-                    {
-                        var modid = urlbuild(
-                        {
-                            scheme: 'aqt',
-                            netloc: src.netloc,
-                            pathparts: [ src.pathparts[0] ]
-                        })
-                        var mod = module(modid);
-                        var name = src.pathparts[1];
-                        if (mod === undefined)
-                        {
-                            throw 'No module for ' + arg;
-                        }
-                        else
-                        {
-                            mod.$load().then(
-                            function(mod)
-                            {
-                                result[modid] = result[importno]
-                                              = name === undefined 
-                                                ? mod : mod[name];
-                                if (! --waiting)
-                                {
-                                    promise.deliver(result, result);
-                                }
-                                else
-                                {
-                                    promise.notify(result);
-                                }
-                                context.$watch();
-                            });
-                        }
-                    }
-                    else
-                    {
-                        throw "Invalid module URL " + arg;
-                    }
-                })(i, urlpathparse(imports[i]));
+                    arg.call(this);
+                }
+                else
+                {
+                    waiter(arg.$promise);
+                }
             }
-        }
-        else
-        {
-            promise.deliver(result);
-        }
-
-        return promise;
-    }
-
-    setup.then(
-    AQT.scanscript = function(aqt)
-    {
-        var scripts = document.scripts;
-        var l = scripts.length;
-        for (var i = 0; i < l; ++i)
-        {
-            var script = scripts[i];
-            if (script.type == 'aqt')
+            else
             {
-                module(script.id, script.getAttribute('href'));
+                waiter(arg);
             }
         }
-    })
-
+        --needed;           // Reset for ready to fire.
+        return resolution;
+    }
+    
+    //////////////////////////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////
 
-    setup.then(
-    AQT.insertwatcher = function(aqt)
+    Context.prototype[':url'] = function(src)
     {
-        document.addEventListener('DOMNodeInserted',
-        function()
+        if (typeof src === 'string')
         {
-            aqt.install.call(event.target, '[aqt],[aqt\\:]');
-        });
-    },
-    AQT.removewatcher = function(aqt)
-    {
-        document.addEventListener('DOMNodeRemoved',
-        function()
-        {
-            aqt.uninstall(event.target);
-        })
-    });
-
-    var uninstall = AQT.uninstall = function uninstall(node)
-    {
-        var ctxid = node.getAttribute('aqt');
-        var context = contexts[ctxid];
-
-        if (ctxid && context !== undefined && !context.$locked)
-        {
-            //console.log('Removing', node, 'context id', ctxid);
-            node.setAttribute('aqt', '');
-            delete contexts[ctxid];
-        }
-
-        var children = node.children;
-        var l = children.length;
-        for (var i = 0; i < l; ++i)
-        {
-            uninstall(children[i]);
+            return src;
         }
     };
 
-    //////////////////////////////////////////////////////////////////////////
-    
-    var comparator = AQT.comparator = function(obj)
+    Context.prototype[':xhr'] = function(obj, config, resolution)
     {
-        if (obj instanceof Array)
+        when(this.$make('url'))
+        .call(function(url)
         {
-            var proto = obj.__proto__;
-            var l = obj.length;
-            var checks = [];
-            for (var i = 0; i < l; ++i)
-            {
-                checks.push(comparator(obj[i]));
-            }
-            return function(o)
-            {
-                if (o.__proto__ !== proto)
-                {
-                    return false;
-                }
+            resolution.deliver(new Request(url));
+        });
+    };
 
-                if (o.length != l)
-                {
-                    return false;
-                }
-
-                for (var i = 0; i < l; ++i)
-                {
-                    if (! checks[i](o[i]))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-        }
-        else if (typeof obj === 'object')
-        {
-            var proto = obj.__proto__;
-            var checks = [];
-            var keys = Object.keys(obj);
-            var l = keys.length;
-            for (var i = 0; i < l; ++i)
-            {
-                var key = keys[i];
-                checks[key] = true;
-                checks.push(
-                    (function(k, c)
-                    {
-                        return function(o) { return c(o[k]); };
-                    })(key, comparator(obj[key]))
-                );
-            }
-
-            return function(o)
-            {
-                if (o.__proto__ !== proto)
-                {
-                    return false;
-                }
-
-                for (var key in o)
-                {
-                    if (!checks[key])
-                    {
-                        return false;
-                    }
-                }
-
-                for (var i = 0; i < l; ++i)
-                {
-                    if (! checks[i](o))
-                    {
-                        return false;
-                    }
-                }
-
-                return true;
-            }
-        }
-        else
-        {
-            return function(o) { return obj == o; };
-        }
-    }
-    
-    //////////////////////////////////////////////////////////////////////////
-    
-    setup.then(
-        AQT.autoelements = function autoelements(aqt)
-        {
-            aqt.install('[aqt],[aqt\\:]');
-        }
-    ); 
-
-    //////////////////////////////////////////////////////////////////////////
-    //////////////////////////////////////////////////////////////////////////
-    
-    var benchmark = AQT.benchmark = function(fn, args, maxsecs, reps, minms)
+    Context.prototype[':xhr.opened'] = function(obj, config, resolution)
     {
-        reps = reps === undefined ? 1 : reps;
-        maxsecs = maxsecs === undefined ? 4 : maxsecs;
-        var maxms = parseInt(maxsecs * 1000);
-        var now = Date.now();
-        var overhead, oreps = reps;
-        minms = minms === undefined ? 10 : minms;
-        args = args === undefined ? [] : args instanceof Array ? args : [args];
-        console.log("Benchmarking", reps, "with", maxsecs, "max seconds");
-        var dummy = function() {}
-        while(oreps-- && ((overhead = (Date.now() - now)) < maxms))
+        when(this.$make('xhr'))
+        .call(function(request)
         {
-            dummy.apply(this, args);
+            request.open();
+            resolution.deliver(request);
+        })
+    };
+
+    Context.prototype[':xhr.content'] = function(obj, config, resolution)
+    {
+        when(this.$make('xhr.opened'))
+        .call(function(request)
+        {
+            request.success.then(resolution.fn);
+            request.error.then(aqt.debug);
+        });
+    };
+
+    Context.prototype[':url.parsed'] = function(src)
+    {
+    };
+
+    //////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+  
+    var Request = AQT.Request = function Request(options)
+    {
+        var xhr = this.xhr = new XMLHttpRequest();
+        Promise.call(this, xhr);
+        if (typeof options === 'string')
+        {
+            this.url = options;
         }
-        if (overhead >= maxms)
+        else if (typeof options === 'object')
         {
-            console.log("Overhead > max time, bailing.")
-            return
-        }
-        now = Date.now();
-        var timed, rreps = reps;
-        while(rreps-- && ((timed = (Date.now() - now)) < maxms))
-        {
-            fn.apply(this, args);
-        }
-        var delta = timed - overhead;
-        reps -= rreps;
-        if (delta >= minms)
-        {
-            console.log(reps, "reps in", timed, "ms is", 
-                        delta / reps, "ms per rep, and",
-                        1000 / (delta / reps), "reps per sec");
+            Object.assign(this, options);
         }
 
-        if (timed * 2 < maxms)
-        {
-            benchmark(fn, args, maxsecs, reps * 2);
-        }
-        else
-        {
-            console.log("Done")
-        }
+        this.headers = Object.assign({}, this.headers);
+        xhr.onreadystatechange = this.fn;
+        this.with('success')
+            .with('error')
+            .with('opened')
+            .with('headers')
+            .with('loading')
+            .with('complete')
+            .then(function(event, promise)
+            {
+                switch(this.readyState)
+                {
+                    case 1: return promise.opened.deliver();
+                    case 2: return promise.headers.deliver();
+                    case 3: return promise.loading.deliver(this.responseText);
+                    case 4: 
+                        promise.complete.deliver(this.responseText,
+                        function(data)
+                        {
+                            return this.status < 400 
+                                   ? promise.success.deliver(data)
+                                   : promise.error.deliver(data);
+                        });
+                        break;
+                }
+            });
     }
 
-    //////////////////////////////////////////////////////////////////////////
-    
-    var debug = AQT.debug = function()
+    Request.prototype = Object.assign(Object.create(Promise.prototype),
     {
-        console.log.apply(console, arguments);
-    }
-   
+        method: 'get',
+        open:
+        function(data)
+        {
+            var url = this.url, method = this.method;
+
+            if (! method)
+            {
+                throw 'A method must be specified.';
+            }
+
+            if (! url)
+            {
+                throw 'A URL must be specified.';
+            }
+
+            this.xhr.open(method, url, true, this.username, this.password);
+            this.xhr.send(data);
+            return this;
+        }
+    });
+
+    //////////////////////////////////////////////////////////////////////////
     //////////////////////////////////////////////////////////////////////////
     
-    //AQT.contexts = contexts;
-   
     return aqt
 })()
 
