@@ -48,16 +48,21 @@ var aqt = window.aqt || (function()
     {
         nextLinkID: 0,
 
+        $accept: function()
+        {
+            return this.$deliver.apply(this, arguments);
+        },
+
         $deliver: function(data, callback, start, initiator)
         {
             var self = this.self;
             self = self === undefined ? this : self;
             initiator = initiator === undefined ? this : initiator;
-            var chain = this.chain;
+            var chain = this.$$chain;
             if (chain !== undefined)
             {
-                var l = chain.length;
-                for (var i = start === undefined ? 1 : start; i < l; i += 2)
+                var l = chain.l;
+                for (var i = start === undefined ? 0 : start; i < l; ++i)
                 {
                     var link = chain[i];
                     // TODO: May not need this.  Not sure how to dsiable
@@ -91,6 +96,11 @@ var aqt = window.aqt || (function()
             var promise = this;
             var cancels = single ? [] : undefined;
 
+            if (typeof obj === 'function')
+            {
+                obj = obj(this);
+            }
+
             function await(source, base, key)
             {
                 ++waiting;
@@ -101,7 +111,7 @@ var aqt = window.aqt || (function()
                     base[key] = value;
                     if (waiting === 0)
                     {
-                        promise.$deliver(obj);
+                        promise.$accept(obj);
                     }
                     else if (unset && --waiting === 0)
                     {
@@ -114,7 +124,7 @@ var aqt = window.aqt || (function()
                                 cancels[i].$cancel(cancels[i+1]);
                             }
                         }
-                        promise.$deliver(obj);
+                        promise.$accept(obj);
                     }
                 });
 
@@ -126,7 +136,11 @@ var aqt = window.aqt || (function()
 
             function prepare(obj, base, key)
             {
-                if (obj instanceof Array)
+                if (obj === undefined)
+                {
+                    return;
+                }
+                else if (obj instanceof Array)
                 {
                     var n = obj.length;
                     for (var i = 0; i < n; ++i)
@@ -155,7 +169,7 @@ var aqt = window.aqt || (function()
 
             if (! --waiting)
             {
-                this.deliver(obj);
+                this.$accept(obj);
             }
             
             return this;
@@ -173,43 +187,42 @@ var aqt = window.aqt || (function()
 
         $add: function()
         {
-            var status = arguments[0];
-            var chain = this.chain;
-            if (chain === undefined)
+            var chain = this.$$chain;
+            var idx = chain === undefined ? 0 : chain.l;
+
+            if (chain !== undefined 
+                && chain.length < chain.l + arguments.length + 1)
             {
-                chain = this.chain = [];
+                chain[chain.length * 2 + 1] = undefined;
             }
 
-            var id = this.nextLinkID++;
-            chain.push(id);
+            this.$then.apply(this, arguments);
 
-            if (typeof status === 'string')
-            {
-                var target = this[status];
-                var promise = target.$promise;
-                Array.prototype.push.apply(
-                    (promise === undefined ? target : promise).chain,
-                    Array.prototype.slice.call(arguments, 1)
-                );
-            }
-            else
-            {
-                Array.prototype.push.apply(this.chain, arguments);
-            }
+            var id = '@' + this.nextLinkID++;
+            var chain = this.$$chain;
+            chain[chain.l] = id;
+            chain[chain.l+1] = chain.l - idx + 2;
+            chain.l += 2;
             return id;
         },
 
         $cancel: function(id)
         {
-            var chain = this.chain;
-            var n;
-            if (chain !== undefined && (n = chain.length) != 0)
+            var chain = this.$$chain;
+            if (chain !== undefined)
             {
-                for (var i = 0; i < n; i += 2)
+                var l = chain.l;
+                for (var end = 0; end < l; ++end)
                 {
-                    if (chain[i] === id)
+                    if (chain[end] === id)
                     {
-                        Array.prototype.splice.call(chain, i, 2);
+                        var size = chain[++end];
+                        var start = ++end - size;
+                        for (var i = start; i < end; ++i)
+                        {
+                            chain[i] = chain[i + size];
+                        }
+                        chain.l -= size;
                         return;
                     }
                 }
@@ -218,7 +231,45 @@ var aqt = window.aqt || (function()
 
         $then: function()
         {
-            this.$add.apply(this, arguments);
+            var l = arguments.length;
+            var start = 0;
+            var promise = this;
+            if (l === 0)
+            {
+                return this;
+            }
+            var status = arguments[0];
+            if (typeof status === 'string')
+            {
+                var promise = this[status];
+                start = 1;
+            }
+
+            var chain = this.$$chain;
+            if (chain === undefined)
+            {
+                // Pre-allocate space.
+                chain = this.$$chain = new Array(l + 3);
+                chain.l = 0;
+            }
+            else if (chain.length < chain.l + l - 1)
+            {
+                chain[chain.length * 2 - 1] = undefined;
+            }
+            if (l === 1)
+            {
+                chain[chain.l] = arguments[0];
+            }
+            else
+            {
+                var j = chain.l;
+                for (var i = 0; i < l; ++i)
+                {
+                    chain[++j] = arguments[i];
+                }
+            }
+            chain.l += l;
+
             return this;
         },
 
@@ -227,11 +278,18 @@ var aqt = window.aqt || (function()
             return this.$then(function(args) { return fn.apply(this, args) });
         },
 
+        $addcall: function(fn)
+        {
+            return this.$add(function(args) { return fn.apply(this, args) });
+        },
+
         $with: function(status, fn)
         {
             this[status] = fn === undefined ? new Resolution(this.self) : fn;
             return this;
-        }
+        },
+
+        ':int': parseInt
     };
 
     Object.defineProperty(
@@ -239,14 +297,19 @@ var aqt = window.aqt || (function()
         {
             get: function()
             {
-                var promise = this;
-                function deliverer()
+                var fn = this.$$chain;
+                if (fn === undefined)
                 {
-                    return promise.$deliver.apply(promise, arguments);
-                };
-                Object.assign(deliverer, promise.$delivererMethods);
-                deliverer.$promise = promise;
-                return deliverer;
+                    var promise = this;
+                    fn = function deliverer()
+                    {
+                        return promise.$accept.apply(promise, arguments);
+                    };
+                    Object.assign(fn, promise.$accept);
+                    fn.$promise = promise;
+                    this.$$chain = fn;
+                }
+                return fn;
             }
         }
     );
@@ -256,14 +319,19 @@ var aqt = window.aqt || (function()
         {
             get: function()
             {
-                var promise = this;
-                function deliverer()
+                var fn = this.$$fn;
+                if (fn === undefined)
                 {
-                    return promise.$deliver.call(promise, arguments);
-                };
-                Object.assign(deliverer, promise.$delivererMethods);
-                deliverer.$promise = promise;
-                return deliverer;
+                    var promise = this;
+                    fn = function deliverer()
+                    {
+                        return promise.$accept.call(promise, arguments);
+                    };
+                    Object.assign(fn, promise.$accept);
+                    fn.$promise = promise;
+                    this.$$fn = fn;
+                }
+                return fn;
             }
         }
     );
@@ -283,14 +351,21 @@ var aqt = window.aqt || (function()
         $then: function() 
         { this.$promise.$then.apply(this.$promise, arguments); return this; },
         $call: function() 
-        { this.$promise.$call.apply(this.$promise, arguments); return this; },
+        { this.$promise.$call.apply(this.$promise, arguments); return this;},
+        $addcall: function() 
+        { return this.$promise.$addcall.apply(this.$promise, arguments); },
         $with: function() 
         { this.$promise.$with.apply(this.$promise, arguments); return this; },
+        $accept: function() 
+        { this.$promise.$accept.apply(this.$promise, arguments); return this; },
         $deliver: function() 
         { this.$promise.$deliver.apply(this.$promise, arguments); return this; }
     };
 
     Object.defineProperty(Promise.prototype, '$promise',
+                          { get: function() { return this; } } );
+
+    Object.defineProperty(delivererMethods, '$fn',
                           { get: function() { return this; } } );
 
     //////////////////////////////////////////////////////////////////////////
@@ -323,7 +398,7 @@ var aqt = window.aqt || (function()
             this.deliver = delivered_resolution_deliverfn;
             this.then = delivered_resolution_thenfn;
             this.data = data
-            delete this.chain;
+            delete this.$$chain;
         }
     });
 
@@ -340,7 +415,7 @@ var aqt = window.aqt || (function()
 
     //////////////////////////////////////////////////////////////////////////
     
-    var Variable = AQT.Variable = function Variable(value, self)
+    var Variable = AQT.Variable = function Variable(self, value)
     {
         Promise.call(this, self);
         if (value !== undefined)
@@ -376,6 +451,91 @@ var aqt = window.aqt || (function()
                 fn.call(this, value);
             }
             return Promise.prototype.$then.apply(this, arguments);
+        },
+
+        $install: function(what, config)
+        {
+            var promise = this[what];
+            if (promise === undefined)
+            {
+                var self = this.self;
+                self = self === undefined ? this : self;
+                var fn = self[':' + what];
+                if (fn === undefined)
+                {
+                    throw 'Cannot make ' + what;
+                }
+                promise = new DerivedVariable(this, undefined, this.self);
+                var install = fn.$install;
+                if (install !== undefined)
+                {
+                    install.call(promise, what, config, this);
+                }
+                else 
+                {
+                    var what = fn.$what;
+                    var src = what === undefined ? this : this.$when(what);
+                    src.$then(function(value)
+                    {
+                        var result = fn.call(value, this, config);
+                        if (result !== undefined)
+                        {
+                            promise.$deliver(result);
+                        }
+                    });
+                }
+
+                if (config === undefined)
+                {
+                    this[what] = promise;
+                }
+            }
+            return promise;
+        },
+
+        $service: function(what, fn)
+        {
+            var self = this.self;
+            self = self === undefined ? this : self;
+            var set = self.$set;
+            if (set === undefined)
+            {
+                self[':' + what] = fn;
+            }
+            else
+            {
+                set.call(self, ':' + what, fn);
+            }
+            return this;
+        }
+    });
+
+    Variable.prototype.$delivererMethods = 
+    Object.assign(
+    {
+        $service: function() 
+        { 
+            this.$promise.$service.apply(this.$promise, arguments); 
+            return this; 
+        },
+        $install: function() 
+        { 
+            this.$promise.$install.apply(this.$promise, arguments); 
+            return this; 
+        }
+    }, Variable.prototype.$delivererMethods);
+
+    DerivedVariable = function(source, self, value)
+    {
+        this.$source = source;
+        Variable.call(this, self, value);
+    }
+
+    DerivedVariable.prototype = Object.assign(Object.create(Variable.prototype),
+    {
+        $assign: function()
+        {
+            return this.$source.$assign.apply(this.$source, arguments);
         }
     });
 
