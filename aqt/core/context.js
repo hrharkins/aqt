@@ -220,11 +220,11 @@ function(AQT, Class, Variable)
                 {
                     throw "Cannot $make " + what;
                 }
-                resolution = meta[what] = new aqt.Resolution();
+                resolution = meta[what] = new aqt.Promise();
                 var value = fn.call(this, this._, config, resolution);
                 if (value !== undefined)
                 {
-                    resolution.deliver(value);
+                    resolution.$deliver(value);
                 }
             }
             return resolution;
@@ -238,7 +238,7 @@ function(AQT, Class, Variable)
         function $morph()
         {
             var ref = this;
-            return this.$make.apply(this, arguments).then(
+            return this.$make.apply(this, arguments).$then(
             function(value)
             {
                 var meta = ref.$meta;

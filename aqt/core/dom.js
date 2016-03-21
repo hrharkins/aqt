@@ -2,8 +2,8 @@
 // Copyright (c) 2016 Rich Harkins.  All Rights Reserved.
 
 aqt.module('aqt://aqt/core/dom',
-['aqt#AQT', 'aqt://aqt/core/context#context'],
-function AQTDomModule(AQT, context)
+['aqt#AQT', 'aqt://aqt/core/context#context', 'aqt#aqt'],
+function AQTDomModule(AQT, context, aqt)
 {
 
     //////////////////////////////////////////////////////////////////////////
@@ -112,6 +112,15 @@ function AQTDomModule(AQT, context)
             return result;
         }
     }
+
+    //////////////////////////////////////////////////////////////////////////
+    //////////////////////////////////////////////////////////////////////////
+
+    aqt.ready.$then(
+    function()
+    {
+        aqt.install('[aqt=""]');
+    });
 
 });
 

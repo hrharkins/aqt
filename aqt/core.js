@@ -665,14 +665,17 @@ window.aqt = window.aqt || (function()
                         base = base.substr(0, 
                                 base.length - fragment.length - 1);
                         var req = aqt.module(base);
-                        var result = new aqt.Promise();
-                        req.$then(function() 
+                        deps[i] = (
+                        function module_loaded(result, req, name, module)
                         {
-                            var obj = req[fragment];
-                            result.$deliver(obj);
-                            module.$deps[base] = obj;
-                        });
-                        deps[i] = result;
+                            req.$then(function() 
+                            {
+                                var obj = req[name];
+                                result.$deliver(obj);
+                                module.$deps[base] = obj;
+                            });
+                            return result;
+                        })(new aqt.Promise(), req, fragment, module);
                     }
                 }
             }
@@ -704,6 +707,7 @@ window.aqt = window.aqt || (function()
     module('aqt', function()
     {
         Object.assign(this, aqt, AQT);
+        this.aqt = aqt;
         this.AQT = AQT;
     });
 
