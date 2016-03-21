@@ -1,5 +1,5 @@
 
-aqt.module('aqt:///HelloMod',
+aqt.module('aqt://site/Hello',
 function()
 {
     this.GreeterSvc = function(dest)
